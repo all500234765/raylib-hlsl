@@ -21,21 +21,12 @@
 *       Internal buffer (and resources) must be manually unloaded calling rlglClose().
 *
 *   CONFIGURATION:
-*       #define GRAPHICS_API_OPENGL_33
-*       #define GRAPHICS_API_OPENGL_ES2
-*       #define GRAPHICS_API_OPENGL_ES3
-*           Use selected OpenGL graphics backend, should be supported by platform
-*           Those preprocessor defines are only used on rlgl module, if OpenGL version is
-*           required by any other module, use rlGetVersion() to check it
+*           If DX 11 feature level is required by any other module, use rlGetVersion() to check it
 *
 *       #define RLGL_IMPLEMENTATION
 *           Generates the implementation of the library into the included file.
 *           If not defined, the library is in header only mode and can be included in other headers
 *           or source files without problems. But only ONE file should hold the implementation.
-*
-*       #define RLGL_RENDER_TEXTURES_HINT
-*           Enable framebuffer objects (fbo) support (enabled by default)
-*           Some GPUs could not support them despite the OpenGL version
 *
 *       #define RLGL_SHOW_GL_DETAILS_INFO
 *           Show OpenGL extensions and capabilities detailed logs on init
@@ -105,11 +96,6 @@
 
 #define RLGL_VERSION  "11.0"
 
-
-// TODO: Remove me
-#define GRAPHICS_API_OPENGL_43 1
-
-
 // Function specifiers in case library is build/used as a shared library (Windows)
 // NOTE: Microsoft specifiers to tell compiler that symbols are imported/exported from a .dll
 #if defined(_WIN32)
@@ -144,15 +130,6 @@
 #ifndef RL_FREE
     #define RL_FREE(p)        free(p)
 #endif
-
-// OpenGL 4.3 uses OpenGL 3.3 Core functionality
-#if defined(GRAPHICS_API_OPENGL_43)
-    #define GRAPHICS_API_OPENGL_33
-#endif
-
-// Support framebuffer objects by default
-// NOTE: Some driver implementation do not support it, despite they should
-#define RLGL_RENDER_TEXTURES_HINT
 
 //----------------------------------------------------------------------------------
 // Defines and Macros
@@ -296,6 +273,13 @@ typedef struct Matrix {
 #define RL_MATRIX_TYPE
 #endif
 
+typedef struct rlInputLayoutType {
+    int position   : 1;
+    int texcoord_0 : 1;
+    int texcoord_1 : 1;
+    int color      : 1;
+} rlInputLayoutType;
+
 // Dynamic vertex buffers (position + texcoords + colors + indices arrays)
 typedef struct rlVertexBuffer {
     int elementCount;           // Number of elements in the buffer (QUADS)
@@ -305,9 +289,18 @@ typedef struct rlVertexBuffer {
     unsigned char *colors;      // Vertex colors (RGBA - 4 components per vertex) (shader-location = 3)
     unsigned int *indices;      // Vertex indices (in case vertex data comes indexed) (6 indices per quad)
     unsigned short *indices;    // Vertex indices (in case vertex data comes indexed) (6 indices per quad)
-    unsigned int vaoId;         // OpenGL Vertex Array Object id
-    unsigned int vboId[4];      // OpenGL Vertex Buffer Objects id (4 types of vertex data)
+
+    ID3D11Buffer *vertex_buffer;
+    rlInputLayoutType input_layout_type;
 } rlVertexBuffer;
+
+typedef struct rlTexture {
+    ID3D11Texture2D *tex2D;
+
+    ID3D11ShaderResourceView *srv;
+    ID3D11DepthStencilView *dsv;
+    ID3D11DepthStencilView *rtv;
+} rlTexture;
 
 // Draw call type
 // NOTE: Only texture changes register a new draw, other state-change-related elements are not
@@ -319,7 +312,7 @@ typedef struct rlDrawCall {
     int vertexAlignment;        // Number of vertex required for index alignment (LINES, TRIANGLES)
     //unsigned int vaoId;       // Vertex array id to be used on the draw -> Using RLGL.currentBatch->vertexBuffer.vaoId
     //unsigned int shaderId;    // Shader id to be used on the draw -> Using RLGL.currentShaderId
-    unsigned int textureId;     // Texture id to be used on the draw -> Use to create new draw call if changes
+    rlTexture textureId;        // Texture id to be used on the draw -> Use to create new draw call if changes
 
     //Matrix projection;        // Projection matrix for this draw -> Using RLGL.projection by default
     //Matrix modelview;         // Modelview matrix for this draw -> Using RLGL.modelview by default
@@ -637,14 +630,14 @@ RLAPI void rlDrawVertexArrayInstanced(int offset, int count, int instances);
 RLAPI void rlDrawVertexArrayElementsInstanced(int offset, int count, const void *buffer, int instances);
 
 // Textures management
-RLAPI ID3D11Texture2D *rlLoadTexture(const void *data, int width, int height, int format, int mipmapCount); // Load texture in GPU
-RLAPI ID3D11Texture2D *rlLoadTextureDepth(int width, int height, bool useRenderBuffer);                     // Load depth texture/renderbuffer (to be attached to fbo)
-RLAPI ID3D11Texture2D *rlLoadTextureCubemap(const void *data, int size, int format);                        // Load texture cubemap
+RLAPI rlTexture *rlLoadTexture(const void *data, int width, int height, int format, int mipmapCount); // Load texture in GPU
+RLAPI rlTexture *rlLoadTextureDepth(int width, int height, bool useRenderBuffer);                     // Load depth texture/renderbuffer (to be attached to fbo)
+RLAPI rlTexture *rlLoadTextureCubemap(const void *data, int size, int format);                        // Load texture cubemap
 RLAPI void rlUpdateTexture(unsigned int id, int offsetX, int offsetY, int width, int height, int format, const void *data);  // Update GPU texture with new data
 RLAPI void rlGetGlTextureFormats(int format, unsigned int *glInternalFormat, unsigned int *glFormat, unsigned int *glType);  // Get OpenGL internal formats
 RLAPI const char *rlGetPixelFormatName(unsigned int format);              // Get name string for pixel format
 RLAPI void rlUnloadTexture(unsigned int id);                              // Unload texture from GPU memory
-RLAPI void rlGenTextureMipmaps(unsigned int id, int width, int height, int format, int *mipmaps); // Generate mipmap data for selected texture
+RLAPI void rlGenTextureMipmaps(const rlTexture *texture, int width, int height, int format, int *mipmaps); // Generate mipmap data for selected texture
 RLAPI void *rlReadTexturePixels(unsigned int id, int width, int height, int format);              // Read texture pixel data
 RLAPI unsigned char *rlReadScreenPixels(int width, int height);           // Read screen pixel data (color buffer)
 
@@ -888,21 +881,13 @@ typedef struct rlglData {
 
     } State;            // Renderer state
     struct {
-        bool vao;                           // VAO support (OpenGL ES2 could not support VAO extension) (GL_ARB_vertex_array_object)
-        bool instancing;                    // Instancing supported (GL_ANGLE_instanced_arrays, GL_EXT_draw_instanced + GL_EXT_instanced_arrays)
-        bool texNPOT;                       // NPOT textures full support (GL_ARB_texture_non_power_of_two, GL_OES_texture_npot)
-        bool texDepth;                      // Depth textures supported (GL_ARB_depth_texture, GL_OES_depth_texture)
-        bool texDepthWebGL;                 // Depth textures supported WebGL specific (GL_WEBGL_depth_texture)
         bool texFloat32;                    // float textures support (32 bit per channel) (GL_OES_texture_float)
         bool texCompDXT;                    // DDS texture compression support (GL_EXT_texture_compression_s3tc, GL_WEBGL_compressed_texture_s3tc, GL_WEBKIT_WEBGL_compressed_texture_s3tc)
         bool texCompETC1;                   // ETC1 texture compression support (GL_OES_compressed_ETC1_RGB8_texture, GL_WEBGL_compressed_texture_etc1)
         bool texCompETC2;                   // ETC2/EAC texture compression support (GL_ARB_ES3_compatibility)
         bool texCompPVRT;                   // PVR texture compression support (GL_IMG_texture_compression_pvrtc)
         bool texCompASTC;                   // ASTC texture compression support (GL_KHR_texture_compression_astc_hdr, GL_KHR_texture_compression_astc_ldr)
-        bool texMirrorClamp;                // Clamp mirror wrap mode supported (GL_EXT_texture_mirror_clamp)
-        bool texAnisoFilter;                // Anisotropic texture filtering support (GL_EXT_texture_filter_anisotropic)
         bool computeShader;                 // Compute shaders support (GL_ARB_compute_shader)
-        bool ssbo;                          // Shader storage buffer object support (GL_ARB_shader_storage_buffer_object)
 
         float maxAnisotropyLevel;           // Maximum anisotropy level supported (minimum is 2.0f)
         int maxDepthBits;                   // Maximum bits for depth component
@@ -1149,31 +1134,38 @@ void rlBegin(int mode)
 {
     // Draw mode can be RL_LINES, RL_TRIANGLES and RL_QUADS
     // NOTE: In all three cases, vertex are accumulated over default internal vertex buffer
-    if (RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].mode != mode)
+    rlDrawCall *drawcall = &RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1];
+    if (drawcall->mode != mode)
     {
-        if (RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].vertexCount > 0)
+        int vertex_count = vertex_count;
+        if (vertex_count > 0)
         {
             // Make sure current RLGL.currentBatch->draws[i].vertexCount is aligned a multiple of 4,
             // that way, following QUADS drawing will keep aligned with index processing
             // It implies adding some extra alignment vertex at the end of the draw,
             // those vertex are not processed but they are considered as an additional offset
             // for the next set of vertex to be drawn
-            if (RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].mode == RL_LINES) RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].vertexAlignment = ((RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].vertexCount < 4)? RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].vertexCount : RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].vertexCount%4);
-            else if (RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].mode == RL_TRIANGLES) RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].vertexAlignment = ((RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].vertexCount < 4)? 1 : (4 - (RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].vertexCount%4)));
-            else RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].vertexAlignment = 0;
+            if (drawcall->mode == RL_LINES)
+                drawcall->vertexAlignment = ((vertex_count < 4) ? vertex_count : vertex_count % 4);
+            else if (drawcall->mode == RL_TRIANGLES)
+                drawcall->vertexAlignment = ((vertex_count < 4) ? 1 : (4 - (vertex_count % 4)));
+            else
+                drawcall->vertexAlignment = 0;
 
-            if (!rlCheckRenderBatchLimit(RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].vertexAlignment))
+            if (!rlCheckRenderBatchLimit(drawcall->vertexAlignment))
             {
-                RLGL.State.vertexCounter += RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].vertexAlignment;
+                RLGL.State.vertexCounter += drawcall->vertexAlignment;
                 RLGL.currentBatch->drawCounter++;
+                drawcall = &RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1];
             }
         }
 
-        if (RLGL.currentBatch->drawCounter >= RL_DEFAULT_BATCH_DRAWCALLS) rlDrawRenderBatch(RLGL.currentBatch);
+        if (RLGL.currentBatch->drawCounter >= RL_DEFAULT_BATCH_DRAWCALLS)
+            rlDrawRenderBatch(RLGL.currentBatch);
 
-        RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].mode = mode;
-        RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].vertexCount = 0;
-        RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].textureId = RLGL.State.defaultTextureId;
+        drawcall->mode = mode;
+        vertex_count = 0;
+        drawcall->textureId = RLGL.State.defaultTextureId;
     }
 }
 
@@ -1197,55 +1189,61 @@ void rlVertex3f(float x, float y, float z)
     // Transform provided vector if required
     if (RLGL.State.transformRequired)
     {
-        tx = RLGL.State.transform.m0*x + RLGL.State.transform.m4*y + RLGL.State.transform.m8*z + RLGL.State.transform.m12;
-        ty = RLGL.State.transform.m1*x + RLGL.State.transform.m5*y + RLGL.State.transform.m9*z + RLGL.State.transform.m13;
-        tz = RLGL.State.transform.m2*x + RLGL.State.transform.m6*y + RLGL.State.transform.m10*z + RLGL.State.transform.m14;
+        const Matrix &transform = RLGL.State.transform;
+        tx = transform.m0*x + transform.m4*y + transform.m8*z + transform.m12;
+        ty = transform.m1*x + transform.m5*y + transform.m9*z + transform.m13;
+        tz = transform.m2*x + transform.m6*y + transform.m10*z + transform.m14;
     }
+
+    rlDrawCall *drawcall = &RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1];
+    rlVertexBuffer *vertex_buffer = &RLGL.currentBatch->vertexBuffer[RLGL.currentBatch->currentBuffer];
+    int vertex_counter = RLGL.State.vertexCounter;
+    int vertex_count = drawcall->vertexCount;
 
     // WARNING: We can't break primitives when launching a new batch.
     // RL_LINES comes in pairs, RL_TRIANGLES come in groups of 3 vertices and RL_QUADS come in groups of 4 vertices.
     // We must check current draw.mode when a new vertex is required and finish the batch only if the draw.mode draw.vertexCount is %2, %3 or %4
-    if (RLGL.State.vertexCounter > (RLGL.currentBatch->vertexBuffer[RLGL.currentBatch->currentBuffer].elementCount*4 - 4))
+    if (vertex_counter > (vertex_buffer->elementCount * 4 - 4))
     {
-        if ((RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].mode == RL_LINES) &&
-            (RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].vertexCount%2 == 0))
+        if ((drawcall->mode == RL_LINES) && (vertex_count % 2 == 0))
         {
             // Reached the maximum number of vertices for RL_LINES drawing
             // Launch a draw call but keep current state for next vertices comming
             // NOTE: We add +1 vertex to the check for security
             rlCheckRenderBatchLimit(2 + 1);
-        }
-        else if ((RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].mode == RL_TRIANGLES) &&
-            (RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].vertexCount%3 == 0))
+        } else if ((drawcall->mode == RL_TRIANGLES) && (vertex_count % 3 == 0))
         {
             rlCheckRenderBatchLimit(3 + 1);
-        }
-        else if ((RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].mode == RL_QUADS) &&
-            (RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].vertexCount%4 == 0))
+        } else if ((drawcall->mode == RL_QUADS) && (vertex_count % 4 == 0))
         {
             rlCheckRenderBatchLimit(4 + 1);
         }
+
+        drawcall = &RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1];
+        vertex_buffer = &RLGL.currentBatch->vertexBuffer[RLGL.currentBatch->currentBuffer]; // TODO: Check me
+        vertex_counter = RLGL.State.vertexCounter;
+        vertex_count = drawcall->vertexCount;
     }
 
     // Add vertices
-    RLGL.currentBatch->vertexBuffer[RLGL.currentBatch->currentBuffer].vertices[3*RLGL.State.vertexCounter] = tx;
-    RLGL.currentBatch->vertexBuffer[RLGL.currentBatch->currentBuffer].vertices[3*RLGL.State.vertexCounter + 1] = ty;
-    RLGL.currentBatch->vertexBuffer[RLGL.currentBatch->currentBuffer].vertices[3*RLGL.State.vertexCounter + 2] = tz;
+    vertex_buffer->vertices[3 * vertex_counter + 0] = tx;
+    vertex_buffer->vertices[3 * vertex_counter + 1] = ty;
+    vertex_buffer->vertices[3 * vertex_counter + 2] = tz;
 
     // Add current texcoord
-    RLGL.currentBatch->vertexBuffer[RLGL.currentBatch->currentBuffer].texcoords[2*RLGL.State.vertexCounter] = RLGL.State.texcoordx;
-    RLGL.currentBatch->vertexBuffer[RLGL.currentBatch->currentBuffer].texcoords[2*RLGL.State.vertexCounter + 1] = RLGL.State.texcoordy;
+    vertex_buffer->texcoords[2 * vertex_counter + 0] = RLGL.State.texcoordx;
+    vertex_buffer->texcoords[2 * vertex_counter + 1] = RLGL.State.texcoordy;
 
     // WARNING: By default rlVertexBuffer struct does not store normals
 
     // Add current color
-    RLGL.currentBatch->vertexBuffer[RLGL.currentBatch->currentBuffer].colors[4*RLGL.State.vertexCounter] = RLGL.State.colorr;
-    RLGL.currentBatch->vertexBuffer[RLGL.currentBatch->currentBuffer].colors[4*RLGL.State.vertexCounter + 1] = RLGL.State.colorg;
-    RLGL.currentBatch->vertexBuffer[RLGL.currentBatch->currentBuffer].colors[4*RLGL.State.vertexCounter + 2] = RLGL.State.colorb;
-    RLGL.currentBatch->vertexBuffer[RLGL.currentBatch->currentBuffer].colors[4*RLGL.State.vertexCounter + 3] = RLGL.State.colora;
+    vertex_buffer->colors[4 * vertex_counter + 0] = RLGL.State.colorr;
+    vertex_buffer->colors[4 * vertex_counter + 1] = RLGL.State.colorg;
+    vertex_buffer->colors[4 * vertex_counter + 2] = RLGL.State.colorb;
+    vertex_buffer->colors[4 * vertex_counter + 3] = RLGL.State.colora;
 
     RLGL.State.vertexCounter++;
-    RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].vertexCount++;
+    drawcall->vertexCount++;
 }
 
 // Define one vertex (position)
@@ -1308,39 +1306,42 @@ void rlSetTexture(unsigned int id)
     if (id == 0)
     {
         // NOTE: If quads batch limit is reached, we force a draw call and next batch starts
-        if (RLGL.State.vertexCounter >=
-            RLGL.currentBatch->vertexBuffer[RLGL.currentBatch->currentBuffer].elementCount*4)
-        {
+        if (RLGL.State.vertexCounter >= RLGL.currentBatch->vertexBuffer[RLGL.currentBatch->currentBuffer].elementCount * 4)
             rlDrawRenderBatch(RLGL.currentBatch);
-        }
-    }
-    else
+    } else
     {
-        if (RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].textureId != id)
+        rlDrawCall *drawcall = &RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1];
+        if (drawcall->textureId != id)
         {
-            if (RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].vertexCount > 0)
+            int vertex_count = drawcall->vertexCount;
+            if (vertex_count > 0)
             {
                 // Make sure current RLGL.currentBatch->draws[i].vertexCount is aligned a multiple of 4,
                 // that way, following QUADS drawing will keep aligned with index processing
                 // It implies adding some extra alignment vertex at the end of the draw,
                 // those vertex are not processed but they are considered as an additional offset
                 // for the next set of vertex to be drawn
-                if (RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].mode == RL_LINES) RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].vertexAlignment = ((RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].vertexCount < 4)? RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].vertexCount : RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].vertexCount%4);
-                else if (RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].mode == RL_TRIANGLES) RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].vertexAlignment = ((RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].vertexCount < 4)? 1 : (4 - (RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].vertexCount%4)));
-                else RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].vertexAlignment = 0;
+                if (drawcall->mode == RL_LINES)
+                    drawcall->vertexAlignment = ((vertex_count < 4) ? vertex_count : vertex_count % 4);
+                else if (drawcall->mode == RL_TRIANGLES)
+                    drawcall->vertexAlignment = ((vertex_count < 4) ? 1 : (4 - (vertex_count % 4)));
+                else
+                    drawcall->vertexAlignment = 0;
 
-                if (!rlCheckRenderBatchLimit(RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].vertexAlignment))
+                if (!rlCheckRenderBatchLimit(drawcall->vertexAlignment))
                 {
-                    RLGL.State.vertexCounter += RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].vertexAlignment;
+                    RLGL.State.vertexCounter += drawcall->vertexAlignment;
 
                     RLGL.currentBatch->drawCounter++;
+                    drawcall = &RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1];
                 }
             }
 
-            if (RLGL.currentBatch->drawCounter >= RL_DEFAULT_BATCH_DRAWCALLS) rlDrawRenderBatch(RLGL.currentBatch);
+            if (RLGL.currentBatch->drawCounter >= RL_DEFAULT_BATCH_DRAWCALLS)
+                rlDrawRenderBatch(RLGL.currentBatch);
 
-            RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].textureId = id;
-            RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].vertexCount = 0;
+            drawcall->textureId = id;
+            drawcall->vertexCount = 0;
         }
     }
 }
@@ -1470,24 +1471,19 @@ void rlDisableShader(void)
 // Enable rendering to texture (fbo)
 void rlEnableFramebuffer(unsigned int id)
 {
-#if (defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)) && defined(RLGL_RENDER_TEXTURES_HINT)
     glBindFramebuffer(GL_FRAMEBUFFER, id);
-#endif
 }
 
 // Disable rendering to texture
 void rlDisableFramebuffer(void)
 {
-#if (defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)) && defined(RLGL_RENDER_TEXTURES_HINT)
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-#endif
 }
 
 // Activate multiple draw color buffers
 // NOTE: One color buffer is always active by default
 void rlActiveDrawBuffers(int count)
 {
-#if ((defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES3)) && defined(RLGL_RENDER_TEXTURES_HINT))
     // NOTE: Maximum number of draw buffers supported is implementation dependant,
     // it can be queried with glGet*() but it must be at least 8
     //GLint maxDrawBuffers = 0;
@@ -1495,7 +1491,8 @@ void rlActiveDrawBuffers(int count)
 
     if (count > 0)
     {
-        if (count > 8) TRACELOG(LOG_WARNING, "GL: Max color buffers limited to 8");
+        if (count > 8)
+            TRACELOG(LOG_WARNING, "GL: Max color buffers limited to 8");
         else
         {
             unsigned int buffers[8] = {
@@ -1512,8 +1509,8 @@ void rlActiveDrawBuffers(int count)
             glDrawBuffers(count, buffers);
         }
     }
-    else TRACELOG(LOG_WARNING, "GL: One color buffer active by default");
-#endif
+    else
+        TRACELOG(LOG_WARNING, "GL: One color buffer active by default");
 }
 
 //----------------------------------------------------------------------------------
@@ -1917,21 +1914,14 @@ void rlLoadExtensions(void *loader)
 
     // Register supported extensions flags
     // OpenGL 3.3 extensions supported by default (core)
-    RLGL.ExtSupported.vao = true;
-    RLGL.ExtSupported.instancing = true;
-    RLGL.ExtSupported.texNPOT = true;
     RLGL.ExtSupported.texFloat32 = true;
-    RLGL.ExtSupported.texDepth = true;
     RLGL.ExtSupported.maxDepthBits = 32;
-    RLGL.ExtSupported.texAnisoFilter = true;
-    RLGL.ExtSupported.texMirrorClamp = true;
 
     // Optional OpenGL 3.3 extensions
     RLGL.ExtSupported.texCompASTC = GLAD_GL_KHR_texture_compression_astc_hdr && GLAD_GL_KHR_texture_compression_astc_ldr;
     RLGL.ExtSupported.texCompDXT = GLAD_GL_EXT_texture_compression_s3tc;  // Texture compression: DXT
     RLGL.ExtSupported.texCompETC2 = GLAD_GL_ARB_ES3_compatibility;        // Texture compression: ETC2/EAC
     RLGL.ExtSupported.computeShader = GLAD_GL_ARB_compute_shader;
-    RLGL.ExtSupported.ssbo = GLAD_GL_ARB_shader_storage_buffer_object;
 
     // Check OpenGL information and capabilities
     //------------------------------------------------------------------------------
@@ -1979,9 +1969,7 @@ void rlLoadExtensions(void *loader)
 #else   // RLGL_SHOW_GL_DETAILS_INFO
 
     // Show some basic info about GL supported features
-    if (RLGL.ExtSupported.vao) TRACELOG(RL_LOG_INFO, "GL: VAO extension detected, VAO functions loaded successfully");
     else TRACELOG(RL_LOG_WARNING, "GL: VAO extension not found, VAO not supported");
-    if (RLGL.ExtSupported.texNPOT) TRACELOG(RL_LOG_INFO, "GL: NPOT textures extension detected, full NPOT textures supported");
     else TRACELOG(RL_LOG_WARNING, "GL: NPOT textures extension not found, limited NPOT support (no-mipmaps, no-repeat)");
     if (RLGL.ExtSupported.texCompDXT) TRACELOG(RL_LOG_INFO, "GL: DXT compressed textures supported");
     if (RLGL.ExtSupported.texCompETC1) TRACELOG(RL_LOG_INFO, "GL: ETC1 compressed textures supported");
@@ -1989,7 +1977,6 @@ void rlLoadExtensions(void *loader)
     if (RLGL.ExtSupported.texCompPVRT) TRACELOG(RL_LOG_INFO, "GL: PVRT compressed textures supported");
     if (RLGL.ExtSupported.texCompASTC) TRACELOG(RL_LOG_INFO, "GL: ASTC compressed textures supported");
     if (RLGL.ExtSupported.computeShader) TRACELOG(RL_LOG_INFO, "GL: Compute shaders supported");
-    if (RLGL.ExtSupported.ssbo) TRACELOG(RL_LOG_INFO, "GL: Shader storage buffer objects supported");
 #endif  // RLGL_SHOW_GL_DETAILS_INFO
 }
 
@@ -2091,12 +2078,9 @@ rlRenderBatch rlLoadRenderBatch(int numBuffers, int bufferElements)
     //--------------------------------------------------------------------------------------------
     for (int i = 0; i < numBuffers; i++)
     {
-        if (RLGL.ExtSupported.vao)
-        {
-            // Initialize Quads VAO
-            glGenVertexArrays(1, &batch.vertexBuffer[i].vaoId);
-            glBindVertexArray(batch.vertexBuffer[i].vaoId);
-        }
+        // Initialize Quads VAO
+        glGenVertexArrays(1, &batch.vertexBuffer[i].vaoId);
+        glBindVertexArray(batch.vertexBuffer[i].vaoId);
 
         // Quads - Vertex buffers binding and attributes enable
         // Vertex position buffer (shader-location = 0)
@@ -2167,15 +2151,12 @@ void rlUnloadRenderBatch(rlRenderBatch batch)
     for (int i = 0; i < batch.bufferCount; i++)
     {
         // Unbind VAO attribs data
-        if (RLGL.ExtSupported.vao)
-        {
-            glBindVertexArray(batch.vertexBuffer[i].vaoId);
-            glDisableVertexAttribArray(0);
-            glDisableVertexAttribArray(1);
-            glDisableVertexAttribArray(2);
-            glDisableVertexAttribArray(3);
-            glBindVertexArray(0);
-        }
+        glBindVertexArray(batch.vertexBuffer[i].vaoId);
+        glDisableVertexAttribArray(0);
+        glDisableVertexAttribArray(1);
+        glDisableVertexAttribArray(2);
+        glDisableVertexAttribArray(3);
+        glBindVertexArray(0);
 
         // Delete VBOs from GPU (VRAM)
         glDeleteBuffers(1, &batch.vertexBuffer[i].vboId[0]);
@@ -2184,7 +2165,7 @@ void rlUnloadRenderBatch(rlRenderBatch batch)
         glDeleteBuffers(1, &batch.vertexBuffer[i].vboId[3]);
 
         // Delete VAOs from GPU (VRAM)
-        if (RLGL.ExtSupported.vao) glDeleteVertexArrays(1, &batch.vertexBuffer[i].vaoId);
+        glDeleteVertexArrays(1, &batch.vertexBuffer[i].vaoId);
 
         // Free vertex arrays memory from CPU (RAM)
         RL_FREE(batch.vertexBuffer[i].vertices);
@@ -2209,7 +2190,7 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
     if (RLGL.State.vertexCounter > 0)
     {
         // Activate elements VAO
-        if (RLGL.ExtSupported.vao) glBindVertexArray(batch->vertexBuffer[batch->currentBuffer].vaoId);
+        glBindVertexArray(batch->vertexBuffer[batch->currentBuffer].vaoId);
 
         // Vertex positions buffer
         glBindBuffer(GL_ARRAY_BUFFER, batch->vertexBuffer[batch->currentBuffer].vboId[0]);
@@ -2242,7 +2223,7 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
         // glUnmapBuffer(GL_ARRAY_BUFFER);
 
         // Unbind the current VAO
-        if (RLGL.ExtSupported.vao) glBindVertexArray(0);
+        glBindVertexArray(0);
     }
     //------------------------------------------------------------------------------------------------------------
 
@@ -2252,7 +2233,8 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
     Matrix matModelView = RLGL.State.modelview;
 
     int eyeCount = 1;
-    if (RLGL.State.stereoRender) eyeCount = 2;
+    if (RLGL.State.stereoRender)
+        eyeCount = 2;
 
     for (int eye = 0; eye < eyeCount; eye++)
     {
@@ -2283,27 +2265,8 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
             };
             glUniformMatrix4fv(RLGL.State.currentShaderLocs[RL_SHADER_LOC_MATRIX_MVP], 1, false, matMVPfloat);
 
-            if (RLGL.ExtSupported.vao) glBindVertexArray(batch->vertexBuffer[batch->currentBuffer].vaoId);
-            else
-            {
-                // Bind vertex attrib: position (shader-location = 0)
-                glBindBuffer(GL_ARRAY_BUFFER, batch->vertexBuffer[batch->currentBuffer].vboId[0]);
-                glVertexAttribPointer(RLGL.State.currentShaderLocs[RL_SHADER_LOC_VERTEX_POSITION], 3, GL_FLOAT, 0, 0, 0);
-                glEnableVertexAttribArray(RLGL.State.currentShaderLocs[RL_SHADER_LOC_VERTEX_POSITION]);
-
-                // Bind vertex attrib: texcoord (shader-location = 1)
-                glBindBuffer(GL_ARRAY_BUFFER, batch->vertexBuffer[batch->currentBuffer].vboId[1]);
-                glVertexAttribPointer(RLGL.State.currentShaderLocs[RL_SHADER_LOC_VERTEX_TEXCOORD01], 2, GL_FLOAT, 0, 0, 0);
-                glEnableVertexAttribArray(RLGL.State.currentShaderLocs[RL_SHADER_LOC_VERTEX_TEXCOORD01]);
-
-                // Bind vertex attrib: color (shader-location = 3)
-                glBindBuffer(GL_ARRAY_BUFFER, batch->vertexBuffer[batch->currentBuffer].vboId[2]);
-                glVertexAttribPointer(RLGL.State.currentShaderLocs[RL_SHADER_LOC_VERTEX_COLOR], 4, GL_UNSIGNED_BYTE, GL_TRUE, 0, 0);
-                glEnableVertexAttribArray(RLGL.State.currentShaderLocs[RL_SHADER_LOC_VERTEX_COLOR]);
-
-                glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, batch->vertexBuffer[batch->currentBuffer].vboId[3]);
-            }
-
+            glBindVertexArray(batch->vertexBuffer[batch->currentBuffer].vaoId);
+            
             // Setup some default shader values
             glUniform4f(RLGL.State.currentShaderLocs[RL_SHADER_LOC_COLOR_DIFFUSE], 1.0f, 1.0f, 1.0f, 1.0f);
             glUniform1i(RLGL.State.currentShaderLocs[RL_SHADER_LOC_MAP_DIFFUSE], 0);  // Active default sampler2D: texture0
@@ -2328,7 +2291,8 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
                 // Bind current draw call texture, activated as GL_TEXTURE0 and Bound to sampler2D texture0 by default
                 glBindTexture(GL_TEXTURE_2D, batch->draws[i].textureId);
 
-                if ((batch->draws[i].mode == RL_LINES) || (batch->draws[i].mode == RL_TRIANGLES)) glDrawArrays(batch->draws[i].mode, vertexOffset, batch->draws[i].vertexCount);
+                if ((batch->draws[i].mode == RL_LINES) || (batch->draws[i].mode == RL_TRIANGLES))
+                    glDrawArrays(batch->draws[i].mode, vertexOffset, batch->draws[i].vertexCount);
                 else
                 {
                     // We need to define the number of indices to be processed: elementCount*6
@@ -2340,22 +2304,17 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
                 vertexOffset += (batch->draws[i].vertexCount + batch->draws[i].vertexAlignment);
             }
 
-            if (!RLGL.ExtSupported.vao)
-            {
-                glBindBuffer(GL_ARRAY_BUFFER, 0);
-                glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-            }
-
             glBindTexture(GL_TEXTURE_2D, 0);    // Unbind textures
         }
 
-        if (RLGL.ExtSupported.vao) glBindVertexArray(0); // Unbind VAO
+        glBindVertexArray(0); // Unbind VAO
 
         glUseProgram(0);    // Unbind shader program
     }
 
     // Restore viewport to default measures
-    if (eyeCount == 2) rlViewport(0, 0, RLGL.State.framebufferWidth, RLGL.State.framebufferHeight);
+    if (eyeCount == 2)
+        rlViewport(0, 0, RLGL.State.framebufferWidth, RLGL.State.framebufferHeight);
     //------------------------------------------------------------------------------------------------------------
 
     // Reset batch buffers
@@ -2379,7 +2338,8 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
     }
 
     // Reset active texture units for next batch
-    for (int i = 0; i < RL_DEFAULT_BATCH_MAX_TEXTURE_UNITS; i++) RLGL.State.activeTextureId[i] = 0;
+    for (int i = 0; i < RL_DEFAULT_BATCH_MAX_TEXTURE_UNITS; i++)
+        RLGL.State.activeTextureId[i] = 0;
 
     // Reset draws counter to one draw for the batch
     batch->drawCounter = 1;
@@ -2387,7 +2347,8 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
 
     // Change to next buffer in the list (in case of multi-buffering)
     batch->currentBuffer++;
-    if (batch->currentBuffer >= batch->bufferCount) batch->currentBuffer = 0;
+    if (batch->currentBuffer >= batch->bufferCount)
+        batch->currentBuffer = 0;
 }
 
 // Set the active render batch for rlgl
@@ -2395,8 +2356,10 @@ void rlSetRenderBatchActive(rlRenderBatch *batch)
 {
     rlDrawRenderBatch(RLGL.currentBatch);
 
-    if (batch != NULL) RLGL.currentBatch = batch;
-    else RLGL.currentBatch = &RLGL.defaultBatch;
+    if (batch != NULL)
+        RLGL.currentBatch = batch;
+    else
+        RLGL.currentBatch = &RLGL.defaultBatch;
 }
 
 // Update and draw internal render batch
@@ -2411,20 +2374,21 @@ bool rlCheckRenderBatchLimit(int vCount)
 {
     bool overflow = false;
 
-    if ((RLGL.State.vertexCounter + vCount) >=
-        (RLGL.currentBatch->vertexBuffer[RLGL.currentBatch->currentBuffer].elementCount*4))
+    if ((RLGL.State.vertexCounter + vCount) >= (vertex_buffer->elementCount*4))
     {
         overflow = true;
 
+        rlDrawCall *drawcall = &RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1];
+
         // Store current primitive drawing mode and texture id
-        int currentMode = RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].mode;
-        int currentTexture = RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].textureId;
+        int currentMode = drawcall->mode;
+        int currentTexture = drawcall->textureId;
 
         rlDrawRenderBatch(RLGL.currentBatch);    // NOTE: Stereo rendering is checked inside
 
         // Restore state of last batch so we can continue adding vertices
-        RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].mode = currentMode;
-        RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].textureId = currentTexture;
+        drawcall->mode = currentMode;
+        drawcall->textureId = currentTexture;
     }
 
     return overflow;
@@ -2554,10 +2518,6 @@ unsigned int rlLoadTextureDepth(int width, int height, bool useRenderBuffer)
 {
     unsigned int id = 0;
 
-    // In case depth textures not supported, we force renderbuffer usage
-    if (!RLGL.ExtSupported.texDepth)
-        useRenderBuffer = true;
-
     // NOTE: We let the implementation to choose the best bit-depth
     // Possible formats: GL_DEPTH_COMPONENT16, GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT32 and GL_DEPTH_COMPONENT32F
     unsigned int glInternalFormat = GL_DEPTH_COMPONENT;
@@ -2656,8 +2616,10 @@ unsigned int rlLoadTextureCubemap(const void *data, int size, int format)
 
     glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
 
-    if (id > 0) TRACELOG(RL_LOG_INFO, "TEXTURE: [ID %i] Cubemap texture loaded successfully (%ix%i)", id, size, size);
-    else TRACELOG(RL_LOG_WARNING, "TEXTURE: Failed to load cubemap texture");
+    if (id > 0)
+        TRACELOG(RL_LOG_INFO, "TEXTURE: [ID %i] Cubemap texture loaded successfully (%ix%i)", id, size, size);
+    else
+        TRACELOG(RL_LOG_WARNING, "TEXTURE: Failed to load cubemap texture");
 
     return id;
 }
@@ -2675,7 +2637,8 @@ void rlUpdateTexture(unsigned int id, int offsetX, int offsetY, int width, int h
     {
         glTexSubImage2D(GL_TEXTURE_2D, 0, offsetX, offsetY, width, height, glFormat, glType, data);
     }
-    else TRACELOG(RL_LOG_WARNING, "TEXTURE: [ID %i] Failed to update for current texture format (%i)", id, format);
+    else
+        TRACELOG(RL_LOG_WARNING, "TEXTURE: [ID %i] Failed to update for current texture format (%i)", id, format);
 }
 
 // Get OpenGL internal formats and data type from raylib PixelFormat
@@ -2694,9 +2657,9 @@ void rlGetGlTextureFormats(int format, unsigned int *glInternalFormat, unsigned 
         case RL_PIXELFORMAT_UNCOMPRESSED_R5G5B5A1: *glInternalFormat = GL_RGB5_A1; *glFormat = GL_RGBA; *glType = GL_UNSIGNED_SHORT_5_5_5_1; break;
         case RL_PIXELFORMAT_UNCOMPRESSED_R4G4B4A4: *glInternalFormat = GL_RGBA4; *glFormat = GL_RGBA; *glType = GL_UNSIGNED_SHORT_4_4_4_4; break;
         case RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8: *glInternalFormat = GL_RGBA8; *glFormat = GL_RGBA; *glType = GL_UNSIGNED_BYTE; break;
-        case RL_PIXELFORMAT_UNCOMPRESSED_R32: if (RLGL.ExtSupported.texFloat32) *glInternalFormat = GL_R32F; *glFormat = GL_RED; *glType = GL_FLOAT; break;
-        case RL_PIXELFORMAT_UNCOMPRESSED_R32G32B32: if (RLGL.ExtSupported.texFloat32) *glInternalFormat = GL_RGB32F; *glFormat = GL_RGB; *glType = GL_FLOAT; break;
-        case RL_PIXELFORMAT_UNCOMPRESSED_R32G32B32A32: if (RLGL.ExtSupported.texFloat32) *glInternalFormat = GL_RGBA32F; *glFormat = GL_RGBA; *glType = GL_FLOAT; break;
+        case RL_PIXELFORMAT_UNCOMPRESSED_R32: *glInternalFormat = GL_R32F; *glFormat = GL_RED; *glType = GL_FLOAT; break;
+        case RL_PIXELFORMAT_UNCOMPRESSED_R32G32B32: *glInternalFormat = GL_RGB32F; *glFormat = GL_RGB; *glType = GL_FLOAT; break;
+        case RL_PIXELFORMAT_UNCOMPRESSED_R32G32B32A32: *glInternalFormat = GL_RGBA32F; *glFormat = GL_RGBA; *glType = GL_FLOAT; break;
         case RL_PIXELFORMAT_COMPRESSED_DXT1_RGB: if (RLGL.ExtSupported.texCompDXT) *glInternalFormat = GL_COMPRESSED_RGB_S3TC_DXT1_EXT; break;
         case RL_PIXELFORMAT_COMPRESSED_DXT1_RGBA: if (RLGL.ExtSupported.texCompDXT) *glInternalFormat = GL_COMPRESSED_RGBA_S3TC_DXT1_EXT; break;
         case RL_PIXELFORMAT_COMPRESSED_DXT3_RGBA: if (RLGL.ExtSupported.texCompDXT) *glInternalFormat = GL_COMPRESSED_RGBA_S3TC_DXT3_EXT; break;
@@ -2720,9 +2683,9 @@ void rlUnloadTexture(unsigned int id)
 
 // Generate mipmap data for selected texture
 // NOTE: Only supports GPU mipmap generation
-void rlGenTextureMipmaps(ID3D11ShaderResourceView *srv, int width, int height, int format, int *mipmaps)
+void rlGenTextureMipmaps(const rlTexture *texture, int width, int height, int format, int *mipmaps)
 {
-    RLGL.context->GenerateMips(srv);
+    RLGL.context->GenerateMips(texture->srv);
 }
 
 
@@ -2799,10 +2762,8 @@ unsigned int rlLoadFramebuffer(int width, int height)
 {
     unsigned int fboId = 0;
 
-#if (defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)) && defined(RLGL_RENDER_TEXTURES_HINT)
     glGenFramebuffers(1, &fboId);       // Create the framebuffer object
     glBindFramebuffer(GL_FRAMEBUFFER, 0);   // Unbind any framebuffer
-#endif
 
     return fboId;
 }
@@ -2811,7 +2772,6 @@ unsigned int rlLoadFramebuffer(int width, int height)
 // NOTE: Attach type: 0-Color, 1-Depth renderbuffer, 2-Depth texture
 void rlFramebufferAttach(unsigned int fboId, unsigned int texId, int attachType, int texType, int mipLevel)
 {
-#if (defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)) && defined(RLGL_RENDER_TEXTURES_HINT)
     glBindFramebuffer(GL_FRAMEBUFFER, fboId);
 
     switch (attachType)
@@ -2846,7 +2806,6 @@ void rlFramebufferAttach(unsigned int fboId, unsigned int texId, int attachType,
     }
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-#endif
 }
 
 // Verify render texture is complete
@@ -2854,7 +2813,6 @@ bool rlFramebufferComplete(unsigned int id)
 {
     bool result = false;
 
-#if (defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)) && defined(RLGL_RENDER_TEXTURES_HINT)
     glBindFramebuffer(GL_FRAMEBUFFER, id);
 
     GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
@@ -2873,7 +2831,6 @@ bool rlFramebufferComplete(unsigned int id)
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     result = (status == GL_FRAMEBUFFER_COMPLETE);
-#endif
 
     return result;
 }
@@ -2882,7 +2839,6 @@ bool rlFramebufferComplete(unsigned int id)
 // NOTE: All attached textures/cubemaps/renderbuffers are also deleted
 void rlUnloadFramebuffer(unsigned int id)
 {
-#if (defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)) && defined(RLGL_RENDER_TEXTURES_HINT)
 
     // Query depth attachment to automatically delete texture/renderbuffer
     int depthType = 0, depthId = 0;
@@ -2901,7 +2857,6 @@ void rlUnloadFramebuffer(unsigned int id)
     glDeleteFramebuffers(1, &id);
 
     TRACELOG(RL_LOG_INFO, "FBO: [ID %i] Unloaded framebuffer from VRAM (GPU)", id);
-#endif
 }
 
 // Vertex data management
