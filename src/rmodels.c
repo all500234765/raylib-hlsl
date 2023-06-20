@@ -1196,7 +1196,6 @@ void UploadMesh(Mesh *mesh, bool dynamic)
     mesh->vboId[5] = 0;     // Vertex buffer: texcoords2
     mesh->vboId[6] = 0;     // Vertex buffer: indices
 
-#if defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)
     mesh->vaoId = rlLoadVertexArray();
     rlEnableVertexArray(mesh->vaoId);
 
@@ -1290,7 +1289,6 @@ void UploadMesh(Mesh *mesh, bool dynamic)
     else TRACELOG(LOG_INFO, "VBO: Mesh uploaded successfully to VRAM (GPU)");
 
     rlDisableVertexArray();
-#endif
 }
 
 // Update mesh vertex data in GPU for a specific buffer index
@@ -1302,39 +1300,7 @@ void UpdateMeshBuffer(Mesh mesh, int index, const void *data, int dataSize, int 
 // Draw a 3d mesh with material and transform
 void DrawMesh(Mesh mesh, Material material, Matrix transform)
 {
-#if defined(GRAPHICS_API_OPENGL_11)
-    #define GL_VERTEX_ARRAY         0x8074
-    #define GL_NORMAL_ARRAY         0x8075
-    #define GL_COLOR_ARRAY          0x8076
-    #define GL_TEXTURE_COORD_ARRAY  0x8078
 
-    rlEnableTexture(material.maps[MATERIAL_MAP_DIFFUSE].texture.id);
-
-    rlEnableStatePointer(GL_VERTEX_ARRAY, mesh.vertices);
-    rlEnableStatePointer(GL_TEXTURE_COORD_ARRAY, mesh.texcoords);
-    rlEnableStatePointer(GL_NORMAL_ARRAY, mesh.normals);
-    rlEnableStatePointer(GL_COLOR_ARRAY, mesh.colors);
-
-    rlPushMatrix();
-        rlMultMatrixf(MatrixToFloat(transform));
-        rlColor4ub(material.maps[MATERIAL_MAP_DIFFUSE].color.r,
-                   material.maps[MATERIAL_MAP_DIFFUSE].color.g,
-                   material.maps[MATERIAL_MAP_DIFFUSE].color.b,
-                   material.maps[MATERIAL_MAP_DIFFUSE].color.a);
-
-        if (mesh.indices != NULL) rlDrawVertexArrayElements(0, mesh.triangleCount*3, mesh.indices);
-        else rlDrawVertexArray(0, mesh.vertexCount);
-    rlPopMatrix();
-
-    rlDisableStatePointer(GL_VERTEX_ARRAY);
-    rlDisableStatePointer(GL_TEXTURE_COORD_ARRAY);
-    rlDisableStatePointer(GL_NORMAL_ARRAY);
-    rlDisableStatePointer(GL_COLOR_ARRAY);
-
-    rlDisableTexture();
-#endif
-
-#if defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)
     // Bind shader program
     rlEnableShader(material.shader.id);
 
@@ -1528,13 +1494,11 @@ void DrawMesh(Mesh mesh, Material material, Matrix transform)
     // Restore rlgl internal modelview and projection matrices
     rlSetMatrixModelview(matView);
     rlSetMatrixProjection(matProjection);
-#endif
 }
 
 // Draw multiple mesh instances with material and different transforms
 void DrawMeshInstanced(Mesh mesh, Material material, const Matrix *transforms, int instances)
 {
-#if defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)
     // Instancing required variables
     float16 *instanceTransforms = NULL;
     unsigned int instancesVboId = 0;
@@ -1749,7 +1713,6 @@ void DrawMeshInstanced(Mesh mesh, Material material, const Matrix *transforms, i
     // Remove instance transforms buffer
     rlUnloadVertexBuffer(instancesVboId);
     RL_FREE(instanceTransforms);
-#endif
 }
 
 // Unload mesh from memory (RAM and VRAM)
