@@ -335,13 +335,6 @@ typedef enum {
 	RL_PSVITA = 1,       // Direct3D 11.0
 } rlGraphicsAPI;
 
-// Shader type
-typedef enum {
-	RL_SHADER_TYPE_VERTEX = 0,
-	RL_SHADER_TYPE_PIXEL,
-	RL_SHADER_TYPE_COMPUTE,
-};
-
 // Trace log level
 // NOTE: Organized by priority level
 typedef enum {
@@ -658,7 +651,7 @@ extern "C" {            // Prevents name mangling of functions
 
 	// Shaders management
 	RLAPI unsigned int rlLoadShaderCode(const char *vsCode, const char *fsCode);    // Load shader from code strings
-	RLAPI unsigned int rlCompileShader(const char *shaderCode, int type);           // Compile custom shader and return shader id (type: RL_VERTEX_SHADER, RL_FRAGMENT_SHADER, RL_COMPUTE_SHADER)
+	RLAPI unsigned int rlCompileShader(const char *shaderCode, int type);     // Compile custom shader and return shader id (type: RL_VERTEX_SHADER, RL_FRAGMENT_SHADER, RL_COMPUTE_SHADER)
 	RLAPI unsigned int rlLoadShaderProgram(unsigned int vShaderId, unsigned int fShaderId); // Load custom shader program
 	RLAPI void rlUnloadShaderProgram(unsigned int id);                              // Unload shader program
 	RLAPI int rlGetLocationUniform(unsigned int shaderId, const char *uniformName); // Get shader location uniform
@@ -843,6 +836,7 @@ typedef struct rlGraphicsData {
 	D3D_FEATURE_LEVEL feature_level;
 	ID3D11Device *device;
 	ID3D11DeviceContext *context;
+	IDXGISwapChain *swapchain;
 
 	struct {
 		int vertexCounter;                  // Current active render batch vertex counter (generic, used for all batches)
@@ -1834,6 +1828,30 @@ void rlglInit(int width, int height)
 	}
 	#endif
 
+	DXGI_SWAP_CHAIN_DESC swapchain_desc{};
+	swapchain_desc.BufferDesc.Width = width;
+	swapchain_desc.BufferDesc.Height = height;
+	swapchain_desc.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+	swapchain_desc.BufferDesc.RefreshRate.Numerator = CORE.Time.target;
+	swapchain_desc.BufferDesc.RefreshRate.Denominator = 1;
+	swapchain_desc.BufferDesc.Scaling = DXGI_MODE_SCALING_STRETCHED;
+	swapchain_desc.BufferDesc.ScanlineOrdering = DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED;
+	swapchain_desc.SampleDesc.Count = 1;
+	swapchain_desc.SampleDesc.Quality = 0;
+	swapchain_desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+	swapchain_desc.BufferCount = 2;
+	swapchain_desc.OutputWindow = glfwGetWin32Window(CORE.Window.handle);
+	swapchain_desc.Windowed = (CORE.Window.fullscreen == false);
+	swapchain_desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+	swapchain_desc.Flags = 0;
+
+	const D3D_FEATURE_LEVEL feature_levels[] = { D3D_FEATURE_LEVEL_11_0 };
+	if (D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, feature_levels, 1, D3D11_SDK_VERSION,
+		&swapchain_desc, &RLGH.swapchain, &RLGH.device, &RLGH.feature_level, &RLGH.context) != S_OK)
+	{
+		TRACELOG(RL_LOG_FATAL, "rlglInit(): Failed to initialize D3D11\n");
+	}
+
 	// Init default white texture
 	unsigned char pixels[4] = { 255, 255, 255, 255 };   // 1 pixel RGBA (4 bytes)
 	RLGH.State.defaultTexture = rlLoadTexture(pixels, 1, 1, RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8, 1);
@@ -1854,7 +1872,8 @@ void rlglInit(int width, int height)
 	RLGH.currentBatch = &RLGH.defaultBatch;
 
 	// Init stack matrices (emulating OpenGL 1.1)
-	for (int i = 0; i < RL_MAX_MATRIX_STACK_SIZE; i++) RLGH.State.stack[i] = rlMatrixIdentity();
+	for (int i = 0; i < RL_MAX_MATRIX_STACK_SIZE; i++)
+		RLGH.State.stack[i] = rlMatrixIdentity();
 
 	// Init internal matrices
 	RLGH.State.transform = rlMatrixIdentity();
@@ -1909,10 +1928,6 @@ void rlglClose(void)
 // NOTE: External loader function must be provided
 void rlLoadExtensions(void *loader)
 {
-	const D3D_FEATURE_LEVEL feature_levels[] = { D3D_FEATURE_LEVEL_11_0 };
-	if (D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, feature_levels, 1, D3D11_SDK_VERSION, &RLGH.device, &RLGH.feature_level, &RLGH.context) != S_OK)
-		TRACELOG(RL_LOG_FATAL, "rlglInit(): Failed to initialize D3D11\n");
-
 	// NOTE: glad is generated and contains only required OpenGL 3.3 Core extensions (and lower versions)
 	if (gladLoadGL((GLADloadfunc)loader) == 0)
 		TRACELOG(RL_LOG_WARNING, "GLAD: Cannot load OpenGL extensions");
@@ -3043,17 +3058,22 @@ unsigned int rlLoadShaderCode(const char *vsCode, const char *fsCode)
 	unsigned int fragmentShaderId = 0;
 
 	// Compile vertex shader (if provided)
-	if (vsCode != NULL) vertexShaderId = rlCompileShader(vsCode, RL_SHADER_TYPE_VERTEX);
+	if (vsCode != NULL)
+		vertexShaderId = rlCompileShader(vsCode, RL_VERTEX_SHADER);
 	// In case no vertex shader was provided or compilation failed, we use default vertex shader
-	if (vertexShaderId == 0) vertexShaderId = RLGH.State.defaultVShaderId;
+	if (vertexShaderId == 0)
+		vertexShaderId = RLGH.State.defaultVShaderId;
 
 	// Compile fragment shader (if provided)
-	if (fsCode != NULL) fragmentShaderId = rlCompileShader(fsCode, RL_SHADER_TYPE_PIXEL);
+	if (fsCode != NULL)
+		fragmentShaderId = rlCompileShader(fsCode, RL_FRAGMENT_SHADER);
 	// In case no fragment shader was provided or compilation failed, we use default fragment shader
-	if (fragmentShaderId == 0) fragmentShaderId = RLGH.State.defaultFShaderId;
+	if (fragmentShaderId == 0)
+		fragmentShaderId = RLGH.State.defaultFShaderId;
 
 	// In case vertex and fragment shader are the default ones, no need to recompile, we can just assign the default shader program id
-	if ((vertexShaderId == RLGH.State.defaultVShaderId) && (fragmentShaderId == RLGH.State.defaultFShaderId)) id = RLGH.State.defaultShaderId;
+	if ((vertexShaderId == RLGH.State.defaultVShaderId) && (fragmentShaderId == RLGH.State.defaultFShaderId))
+		id = RLGH.State.defaultShaderId;
 	else
 	{
 		// One of or both shader are new, we need to compile a new shader program
@@ -3064,13 +3084,15 @@ unsigned int rlLoadShaderCode(const char *vsCode, const char *fsCode)
 		if (vertexShaderId != RLGH.State.defaultVShaderId)
 		{
 			// WARNING: Shader program linkage could fail and returned id is 0
-			if (id > 0) glDetachShader(id, vertexShaderId);
+			if (id > 0)
+				glDetachShader(id, vertexShaderId);
 			glDeleteShader(vertexShaderId);
 		}
 		if (fragmentShaderId != RLGH.State.defaultFShaderId)
 		{
 			// WARNING: Shader program linkage could fail and returned id is 0
-			if (id > 0) glDetachShader(id, fragmentShaderId);
+			if (id > 0)
+				glDetachShader(id, fragmentShaderId);
 			glDeleteShader(fragmentShaderId);
 		}
 
@@ -3109,18 +3131,21 @@ unsigned int rlLoadShaderCode(const char *vsCode, const char *fsCode)
 	return id;
 }
 
+static 
+
 // Compile custom shader and return shader id
-ID3D11DeviceChild *rlCompileShader(const char *shaderCode, int type)
+unsigned int rlCompileShader(const char *shaderCode, int type)
 {
 	LPCSTR target;
 	switch (type)
 	{
-		case RL_SHADER_TYPE_VERTEX : target = "vs_5_0"; break;
-		case RL_SHADER_TYPE_PIXEL  : target = "ps_5_0"; break;
-		case RL_SHADER_TYPE_COMPUTE: target = "cs_5_0"; break;
+		case RL_VERTEX_SHADER: target = "vs_5_0"; break;
+		case RL_FRAGMENT_SHADER: target = "ps_5_0"; break;
+		case RL_COMPUTE_SHADER: target = "cs_5_0"; break;
+
 		default:
 			TRACELOG(RL_LOG_ERROR, "SHADER: Unknown type %d", type);
-			return nullptr;
+			return 0;
 	}
 
 	UINT flags = D3DCOMPILE_RESOURCES_MAY_ALIAS;
@@ -3136,75 +3161,44 @@ ID3D11DeviceChild *rlCompileShader(const char *shaderCode, int type)
 	ID3DBlob *errors;
 	if (D3DCompile(shaderCode, strlen(shaderCode), "Shader", nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, "main", target, flags, 0, &blob, &errors) != S_OK)
 	{
-		TRACELOG(RL_LOG_ERROR, "SHADER: Failed to compile %s shader:\n%s\n", target, shaderCode);
-		return nullptr;
+		TRACELOG(RL_LOG_ERROR, "SHADER: Failed to compile %s shader:\n%s\n\n%s", target, shaderCode, errors->GetBufferPointer());
+		return 0;
 	}
+
+	HRESULT hr = S_OK;
+	ID3D11DeviceChild *shader = nullptr;
+	switch (type)
+	{
+		case RL_VERTEX_SHADER:
+			hr = RLGH.device->CreateVertexShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, (ID3D11VertexShader*)&shader);
+			break;
+
+		case RL_FRAGMENT_SHADER:
+			hr = RLGH.device->CreatePixelShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, (ID3D11PixelShader*)&shader);
+			break;
+
+		case RL_COMPUTE_SHADER:
+			hr = RLGH.device->CreatePixelShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, (ID3D11ComputeShader*)&shader);
+			break;
+	}
+
+	if (hr != S_OK)
+	{
+		TRACELOG(RL_LOG_ERROR, "SHADER: Failed to create %s shader. Error %h:\n%s", target, hr, shaderCode);
+		return 0;
+	}
+
+
 
 	switch (type)
 	{
-		case RL_SHADER_TYPE_VERTEX:
-			RLGH.device->CreateVertexShader();
-
-			target = "vs_5_0";
-			break;
-
-		case RL_SHADER_TYPE_PIXEL:
-			target = "ps_5_0";
-			break;
-
-		case RL_SHADER_TYPE_COMPUTE:
-			target = "cs_5_0";
-			break;
-
-		default:
-			TRACELOG(RL_LOG_ERROR, "SHADER: Unknown type %d", type);
-			return nullptr;
+		case RL_VERTEX_SHADER: TRACELOG(RL_LOG_INFO, "SHADER: [ID %h] Vertex shader compiled successfully", shader); break;
+		case RL_FRAGMENT_SHADER: TRACELOG(RL_LOG_INFO, "SHADER: [ID %h] Fragment shader compiled successfully", shader); break;
+		//case RL_GEOMETRY_SHADER:
+		case RL_COMPUTE_SHADER: TRACELOG(RL_LOG_INFO, "SHADER: [ID %h] Compute shader compiled successfully", shader); break;
 	}
 
-	unsigned int shader = 0;
-
-	shader = glCreateShader(type);
-	glShaderSource(shader, 1, &shaderCode, NULL);
-
-	GLint success = 0;
-	glCompileShader(shader);
-	glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
-
-	if (success == GL_FALSE)
-	{
-		switch (type)
-		{
-			case GL_VERTEX_SHADER: TRACELOG(RL_LOG_WARNING, "SHADER: [ID %i] Failed to compile vertex shader code", shader); break;
-			case GL_FRAGMENT_SHADER: TRACELOG(RL_LOG_WARNING, "SHADER: [ID %i] Failed to compile fragment shader code", shader); break;
-			//case GL_GEOMETRY_SHADER:
-			case GL_COMPUTE_SHADER: TRACELOG(RL_LOG_WARNING, "SHADER: [ID %i] Failed to compile compute shader code", shader); break;
-			default: break;
-		}
-
-		int maxLength = 0;
-		glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &maxLength);
-
-		if (maxLength > 0)
-		{
-			int length = 0;
-			char *log = (char *)RL_CALLOC(maxLength, sizeof(char));
-			glGetShaderInfoLog(shader, maxLength, &length, log);
-			TRACELOG(RL_LOG_WARNING, "SHADER: [ID %i] Compile error: %s", shader, log);
-			RL_FREE(log);
-		}
-	} else
-	{
-		switch (type)
-		{
-			case GL_VERTEX_SHADER: TRACELOG(RL_LOG_INFO, "SHADER: [ID %i] Vertex shader compiled successfully", shader); break;
-			case GL_FRAGMENT_SHADER: TRACELOG(RL_LOG_INFO, "SHADER: [ID %i] Fragment shader compiled successfully", shader); break;
-			//case GL_GEOMETRY_SHADER:
-			case GL_COMPUTE_SHADER: TRACELOG(RL_LOG_INFO, "SHADER: [ID %i] Compute shader compiled successfully", shader); break;
-			default: break;
-		}
-	}
-
-	return shader;
+	return shader_id;
 }
 
 // Load custom shader strings and return program id

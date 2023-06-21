@@ -2340,7 +2340,7 @@ void BeginTextureMode(RenderTexture2D target)
 
     rlEnableFramebuffer(target.id); // Enable render target
 
-    // Set viewport and RLGL internal framebuffer size
+    // Set viewport and RLGH internal framebuffer size
     rlViewport(0, 0, target.texture.width, target.texture.height);
     rlSetFramebufferWidth(target.texture.width);
     rlSetFramebufferHeight(target.texture.height);
@@ -2455,7 +2455,7 @@ VrStereoConfig LoadVrStereoConfig(VrDeviceInfo device)
 {
     VrStereoConfig config = { 0 };
 
-    if ((rlGetVersion() == RL_OPENGL_33) || (rlGetVersion() >= RL_OPENGL_ES_20))
+    if (rlGetVersion() == RL_DIRECT3D_11_0)
     {
         // Compute aspect ratio
         float aspect = ((float)device.hResolution*0.5f)/(float)device.vResolution;
@@ -2519,7 +2519,8 @@ VrStereoConfig LoadVrStereoConfig(VrDeviceInfo device)
         config.eyeViewportLeft[3] = device.vResolution;
         */
     }
-    else TRACELOG(LOG_WARNING, "RLGL: VR Simulator not supported on OpenGL 1.1");
+    else
+        TRACELOG(LOG_WARNING, "RLGH: VR Simulator not supported on current platform");
 
     return config;
 }
@@ -4139,57 +4140,15 @@ static bool InitGraphicsDevice(int width, int height)
     // For example, if using OpenGL 1.1, driver can provide a 4.3 backwards compatible context.
 
     // Check selection OpenGL version
-    if (rlGetVersion() == RL_OPENGL_21)
+    if (rlGetVersion() == RL_DIRECT3D_11_0)
     {
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 2);          // Choose OpenGL major version (just hint)
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);          // Choose OpenGL minor version (just hint)
-    }
-    else if (rlGetVersion() == RL_OPENGL_33)
-    {
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);          // Choose OpenGL major version (just hint)
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);          // Choose OpenGL minor version (just hint)
-        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE); // Profiles Hint: Only 3.3 and above!
-                                                                       // Values: GLFW_OPENGL_CORE_PROFILE, GLFW_OPENGL_ANY_PROFILE, GLFW_OPENGL_COMPAT_PROFILE
-#if defined(__APPLE__)
-        glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);  // OSX Requires fordward compatibility
-#else
-        glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_FALSE); // Fordward Compatibility Hint: Only 3.3 and above!
-#endif
-        //glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE); // Request OpenGL DEBUG context
-    }
-    else if (rlGetVersion() == RL_OPENGL_43)
-    {
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);          // Choose OpenGL major version (just hint)
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);          // Choose OpenGL minor version (just hint)
-        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-        glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_FALSE);
+        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+
 #if defined(RLGL_ENABLE_OPENGL_DEBUG_CONTEXT)
         glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);   // Enable OpenGL Debug Context
 #endif
     }
-    else if (rlGetVersion() == RL_OPENGL_ES_20)                 // Request OpenGL ES 2.0 context
-    {
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 2);
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
-        glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
-#if defined(PLATFORM_DESKTOP)
-        glfwWindowHint(GLFW_CONTEXT_CREATION_API, GLFW_EGL_CONTEXT_API);
-#else
-        glfwWindowHint(GLFW_CONTEXT_CREATION_API, GLFW_NATIVE_CONTEXT_API);
-#endif
-    }
-    else if (rlGetVersion() == RL_OPENGL_ES_30)                 // Request OpenGL ES 3.0 context
-    {
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
-        glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
-#if defined(PLATFORM_DESKTOP)
-        glfwWindowHint(GLFW_CONTEXT_CREATION_API, GLFW_EGL_CONTEXT_API);
-#else
-        glfwWindowHint(GLFW_CONTEXT_CREATION_API, GLFW_NATIVE_CONTEXT_API);
-#endif
-    }
-
+    
 #if defined(PLATFORM_DESKTOP)
     // NOTE: GLFW 3.4+ defers initialization of the Joystick subsystem on the first call to any Joystick related functions.
     // Forcing this initialization here avoids doing it on PollInputEvents() called by EndDrawing() after first frame has been just drawn.
@@ -4796,7 +4755,7 @@ static bool InitGraphicsDevice(int width, int height)
     rlLoadExtensions(eglGetProcAddress);
 #endif
 
-    // Initialize OpenGL context (states and resources)
+    // Initialize graphics context (states and resources)
     // NOTE: CORE.Window.currentFbo.width and CORE.Window.currentFbo.height not used, just stored as globals in rlgl
     rlglInit(CORE.Window.currentFbo.width, CORE.Window.currentFbo.height);
 
