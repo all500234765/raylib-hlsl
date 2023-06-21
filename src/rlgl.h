@@ -335,6 +335,13 @@ typedef enum {
 	RL_PSVITA = 1,       // Direct3D 11.0
 } rlGraphicsAPI;
 
+// Shader type
+typedef enum {
+	RL_SHADER_TYPE_VERTEX = 0,
+	RL_SHADER_TYPE_PIXEL,
+	RL_SHADER_TYPE_COMPUTE,
+};
+
 // Trace log level
 // NOTE: Organized by priority level
 typedef enum {
@@ -3036,12 +3043,12 @@ unsigned int rlLoadShaderCode(const char *vsCode, const char *fsCode)
 	unsigned int fragmentShaderId = 0;
 
 	// Compile vertex shader (if provided)
-	if (vsCode != NULL) vertexShaderId = rlCompileShader(vsCode, GL_VERTEX_SHADER);
+	if (vsCode != NULL) vertexShaderId = rlCompileShader(vsCode, RL_SHADER_TYPE_VERTEX);
 	// In case no vertex shader was provided or compilation failed, we use default vertex shader
 	if (vertexShaderId == 0) vertexShaderId = RLGH.State.defaultVShaderId;
 
 	// Compile fragment shader (if provided)
-	if (fsCode != NULL) fragmentShaderId = rlCompileShader(fsCode, GL_FRAGMENT_SHADER);
+	if (fsCode != NULL) fragmentShaderId = rlCompileShader(fsCode, RL_SHADER_TYPE_PIXEL);
 	// In case no fragment shader was provided or compilation failed, we use default fragment shader
 	if (fragmentShaderId == 0) fragmentShaderId = RLGH.State.defaultFShaderId;
 
@@ -3103,8 +3110,57 @@ unsigned int rlLoadShaderCode(const char *vsCode, const char *fsCode)
 }
 
 // Compile custom shader and return shader id
-unsigned int rlCompileShader(const char *shaderCode, int type)
+ID3D11DeviceChild *rlCompileShader(const char *shaderCode, int type)
 {
+	LPCSTR target;
+	switch (type)
+	{
+		case RL_SHADER_TYPE_VERTEX : target = "vs_5_0"; break;
+		case RL_SHADER_TYPE_PIXEL  : target = "ps_5_0"; break;
+		case RL_SHADER_TYPE_COMPUTE: target = "cs_5_0"; break;
+		default:
+			TRACELOG(RL_LOG_ERROR, "SHADER: Unknown type %d", type);
+			return nullptr;
+	}
+
+	UINT flags = D3DCOMPILE_RESOURCES_MAY_ALIAS;
+	if (true)
+	{
+		flags |= D3DCOMPILE_DEBUG;
+	} else
+	{
+		flags |= D3DCOMPILE_OPTIMIZATION_LEVEL2;
+	}
+
+	ID3DBlob *blob;
+	ID3DBlob *errors;
+	if (D3DCompile(shaderCode, strlen(shaderCode), "Shader", nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, "main", target, flags, 0, &blob, &errors) != S_OK)
+	{
+		TRACELOG(RL_LOG_ERROR, "SHADER: Failed to compile %s shader:\n%s\n", target, shaderCode);
+		return nullptr;
+	}
+
+	switch (type)
+	{
+		case RL_SHADER_TYPE_VERTEX:
+			RLGH.device->CreateVertexShader();
+
+			target = "vs_5_0";
+			break;
+
+		case RL_SHADER_TYPE_PIXEL:
+			target = "ps_5_0";
+			break;
+
+		case RL_SHADER_TYPE_COMPUTE:
+			target = "cs_5_0";
+			break;
+
+		default:
+			TRACELOG(RL_LOG_ERROR, "SHADER: Unknown type %d", type);
+			return nullptr;
+	}
+
 	unsigned int shader = 0;
 
 	shader = glCreateShader(type);
@@ -3120,7 +3176,7 @@ unsigned int rlCompileShader(const char *shaderCode, int type)
 		{
 			case GL_VERTEX_SHADER: TRACELOG(RL_LOG_WARNING, "SHADER: [ID %i] Failed to compile vertex shader code", shader); break;
 			case GL_FRAGMENT_SHADER: TRACELOG(RL_LOG_WARNING, "SHADER: [ID %i] Failed to compile fragment shader code", shader); break;
-				//case GL_GEOMETRY_SHADER:
+			//case GL_GEOMETRY_SHADER:
 			case GL_COMPUTE_SHADER: TRACELOG(RL_LOG_WARNING, "SHADER: [ID %i] Failed to compile compute shader code", shader); break;
 			default: break;
 		}
@@ -3142,7 +3198,7 @@ unsigned int rlCompileShader(const char *shaderCode, int type)
 		{
 			case GL_VERTEX_SHADER: TRACELOG(RL_LOG_INFO, "SHADER: [ID %i] Vertex shader compiled successfully", shader); break;
 			case GL_FRAGMENT_SHADER: TRACELOG(RL_LOG_INFO, "SHADER: [ID %i] Fragment shader compiled successfully", shader); break;
-				//case GL_GEOMETRY_SHADER:
+			//case GL_GEOMETRY_SHADER:
 			case GL_COMPUTE_SHADER: TRACELOG(RL_LOG_INFO, "SHADER: [ID %i] Compute shader compiled successfully", shader); break;
 			default: break;
 		}
@@ -3693,7 +3749,8 @@ static void rlLoadShaderDefault(void)
 		RLGH.State.defaultShaderLocs[RL_SHADER_LOC_MATRIX_MVP] = glGetUniformLocation(RLGH.State.defaultShaderId, "mvp");
 		RLGH.State.defaultShaderLocs[RL_SHADER_LOC_COLOR_DIFFUSE] = glGetUniformLocation(RLGH.State.defaultShaderId, "colDiffuse");
 		RLGH.State.defaultShaderLocs[RL_SHADER_LOC_MAP_DIFFUSE] = glGetUniformLocation(RLGH.State.defaultShaderId, "texture0");
-	} else TRACELOG(RL_LOG_WARNING, "SHADER: [ID %i] Failed to load default shader", RLGH.State.defaultShaderId);
+	} else
+		TRACELOG(RL_LOG_WARNING, "SHADER: [ID %i] Failed to load default shader", RLGH.State.defaultShaderId);
 }
 
 // Unload default shader
@@ -3799,28 +3856,56 @@ static int rlGetPixelDataSize(int width, int height, int format)
 
 	switch (format)
 	{
-		case RL_PIXELFORMAT_UNCOMPRESSED_GRAYSCALE: bpp = 8; break;
+		case RL_PIXELFORMAT_UNCOMPRESSED_GRAYSCALE:
+			bpp = 8;
+			break;
+
 		case RL_PIXELFORMAT_UNCOMPRESSED_GRAY_ALPHA:
 		case RL_PIXELFORMAT_UNCOMPRESSED_R5G6B5:
 		case RL_PIXELFORMAT_UNCOMPRESSED_R5G5B5A1:
-		case RL_PIXELFORMAT_UNCOMPRESSED_R4G4B4A4: bpp = 16; break;
-		case RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8: bpp = 32; break;
-		case RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8: bpp = 24; break;
-		case RL_PIXELFORMAT_UNCOMPRESSED_R32: bpp = 32; break;
-		case RL_PIXELFORMAT_UNCOMPRESSED_R32G32B32: bpp = 32 * 3; break;
-		case RL_PIXELFORMAT_UNCOMPRESSED_R32G32B32A32: bpp = 32 * 4; break;
+		case RL_PIXELFORMAT_UNCOMPRESSED_R4G4B4A4:
+			bpp = 16;
+			break;
+
+		case RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8:
+			bpp = 32;
+			break;
+
+		case RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8:
+			bpp = 24;
+			break;
+
+		case RL_PIXELFORMAT_UNCOMPRESSED_R32:
+			bpp = 32;
+			break;
+
+		case RL_PIXELFORMAT_UNCOMPRESSED_R32G32B32:
+			bpp = 32 * 3;
+			break;
+
+		case RL_PIXELFORMAT_UNCOMPRESSED_R32G32B32A32:
+			bpp = 32 * 4;
+			break;
+
 		case RL_PIXELFORMAT_COMPRESSED_DXT1_RGB:
 		case RL_PIXELFORMAT_COMPRESSED_DXT1_RGBA:
 		case RL_PIXELFORMAT_COMPRESSED_ETC1_RGB:
 		case RL_PIXELFORMAT_COMPRESSED_ETC2_RGB:
 		case RL_PIXELFORMAT_COMPRESSED_PVRT_RGB:
-		case RL_PIXELFORMAT_COMPRESSED_PVRT_RGBA: bpp = 4; break;
+		case RL_PIXELFORMAT_COMPRESSED_PVRT_RGBA:
+			bpp = 4;
+			break;
+
 		case RL_PIXELFORMAT_COMPRESSED_DXT3_RGBA:
 		case RL_PIXELFORMAT_COMPRESSED_DXT5_RGBA:
 		case RL_PIXELFORMAT_COMPRESSED_ETC2_EAC_RGBA:
-		case RL_PIXELFORMAT_COMPRESSED_ASTC_4x4_RGBA: bpp = 8; break;
-		case RL_PIXELFORMAT_COMPRESSED_ASTC_8x8_RGBA: bpp = 2; break;
-		default: break;
+		case RL_PIXELFORMAT_COMPRESSED_ASTC_4x4_RGBA:
+			bpp = 8;
+			break;
+
+		case RL_PIXELFORMAT_COMPRESSED_ASTC_8x8_RGBA:
+			bpp = 2;
+			break;
 	}
 
 	dataSize = width * height * bpp / 8;  // Total data size in bytes
@@ -3829,8 +3914,10 @@ static int rlGetPixelDataSize(int width, int height, int format)
 	// if texture is smaller, minimum dataSize is 8 or 16
 	if ((width < 4) && (height < 4))
 	{
-		if ((format >= RL_PIXELFORMAT_COMPRESSED_DXT1_RGB) && (format < RL_PIXELFORMAT_COMPRESSED_DXT3_RGBA)) dataSize = 8;
-		else if ((format >= RL_PIXELFORMAT_COMPRESSED_DXT3_RGBA) && (format < RL_PIXELFORMAT_COMPRESSED_ASTC_8x8_RGBA)) dataSize = 16;
+		if ((format >= RL_PIXELFORMAT_COMPRESSED_DXT1_RGB) && (format < RL_PIXELFORMAT_COMPRESSED_DXT3_RGBA))
+			dataSize = 8;
+		else if ((format >= RL_PIXELFORMAT_COMPRESSED_DXT3_RGBA) && (format < RL_PIXELFORMAT_COMPRESSED_ASTC_8x8_RGBA))
+			dataSize = 16;
 	}
 
 	return dataSize;
